@@ -1,21 +1,20 @@
-angular.module('cerebro').controller('ClusterSettingsController', ['$scope',
-  'ClusterSettingsDataService', 'AlertService',
-  function($scope, ClusterSettingsDataService, AlertService) {
+angular.module('cerebro').controller('IndexSettingsController', ['$scope',
+  '$location', 'IndexSettingsDataService', 'AlertService',
+  function($scope, $location, IndexSettingsDataService, AlertService) {
 
     $scope.originalSettings = undefined;
     $scope.settings = undefined;
     $scope.changes = undefined;
     $scope.pendingChanges = 0;
+    $scope.index = $location.search().index;
 
     $scope.set = function(property) {
       var value = $scope.settings[property];
       if (value) {
-        if ($scope.changes[property]) {
-          $scope.changes[property].value = value;
-        } else {
-          $scope.changes[property] = {value: value, transient: true};
+        if (!$scope.changes[property]) {
           $scope.pendingChanges += 1;
         }
+        $scope.changes[property] = value;
       } else {
         $scope.removeChange(property);
       }
@@ -34,14 +33,9 @@ angular.module('cerebro').controller('ClusterSettingsController', ['$scope',
     };
 
     $scope.save = function() {
-      var settings = {transient: {}, persistent: {}};
-      angular.forEach($scope.changes, function(value, property) {
-        if (value.value) {
-          var settingType = value.transient ? 'transient' : 'persistent';
-          settings[settingType][property] = value.value;
-        }
-      });
-      ClusterSettingsDataService.saveSettings(settings,
+      IndexSettingsDataService.update(
+        $scope.index,
+        $scope.changes,
         function(response) {
           AlertService.info('Settings successfully saved', response);
           $scope.setup();
@@ -57,17 +51,19 @@ angular.module('cerebro').controller('ClusterSettingsController', ['$scope',
       $scope.originalSettings = {};
       $scope.changes = {};
       $scope.pendingChanges = 0;
-      ClusterSettingsDataService.getClusterSettings(
+      var loadSetting = function(value, property) {
+        $scope.settings[property] = value;
+        $scope.originalSettings[property] = value;
+      };
+
+      IndexSettingsDataService.get(
+        $scope.index,
         function(response) {
-          ['persistent', 'transient', 'defaults'].forEach(function(group) {
-            angular.forEach(response[group], function(value, property) {
-              $scope.settings[property] = value;
-              $scope.originalSettings[property] = value;
-            });
-          });
+          angular.forEach(response[$scope.index].settings, loadSetting);
+          angular.forEach(response[$scope.index].defaults, loadSetting);
         },
         function(error) {
-          AlertService.error('Error loading cluster settings', error);
+          AlertService.error('Error loading index settings', error);
         }
       );
     };

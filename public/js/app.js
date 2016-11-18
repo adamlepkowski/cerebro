@@ -35,6 +35,10 @@ angular.module('cerebro', ['ngRoute', 'ngAnimate', 'ui.bootstrap'])
           templateUrl: 'cluster_settings/index.html',
           controller: 'ClusterSettingsController'
         })
+        .when('/index_settings', {
+          templateUrl: 'index_settings/index.html',
+          controller: 'IndexSettingsController'
+        })
         .otherwise({
             redirectTo: '/connect'
           }
@@ -317,14 +321,11 @@ angular.module('cerebro').controller('ClusterSettingsController', ['$scope',
       $scope.pendingChanges = 0;
       ClusterSettingsDataService.getClusterSettings(
         function(response) {
-          angular.forEach(response.persistent, function(value, property) {
-            $scope.settings[property] = value;
-            $scope.originalSettings[property] = value;
-          });
-          // transient settings have priority over persistent settings
-          angular.forEach(response.transient, function(value, property) {
-            $scope.settings[property] = value;
-            $scope.originalSettings[property] = value;
+          ['persistent', 'transient', 'defaults'].forEach(function(group) {
+            angular.forEach(response[group], function(value, property) {
+              $scope.settings[property] = value;
+              $scope.originalSettings[property] = value;
+            });
           });
         },
         function(error) {
@@ -451,6 +452,94 @@ angular.module('cerebro').controller('CreateIndexController', ['$scope',
   }
 ]);
 
+angular.module('cerebro').controller('IndexSettingsController', ['$scope',
+  '$location', 'IndexSettingsDataService', 'AlertService',
+  function($scope, $location, IndexSettingsDataService, AlertService) {
+
+    $scope.originalSettings = undefined;
+    $scope.settings = undefined;
+    $scope.changes = undefined;
+    $scope.pendingChanges = 0;
+    $scope.index = $location.search().index;
+
+    $scope.set = function(property) {
+      var value = $scope.settings[property];
+      if (value) {
+        if (!$scope.changes[property]) {
+          $scope.pendingChanges += 1;
+        }
+        $scope.changes[property] = value;
+      } else {
+        $scope.removeChange(property);
+      }
+    };
+
+    $scope.removeChange = function(property) {
+      if ($scope.changes[property]) {
+        $scope.pendingChanges -= 1;
+        delete $scope.changes[property];
+      }
+    };
+
+    $scope.revert = function(property) {
+      $scope.settings[property] = $scope.originalSettings[property];
+      $scope.removeChange(property);
+    };
+
+    $scope.save = function() {
+      IndexSettingsDataService.update(
+        $scope.index,
+        $scope.changes,
+        function(response) {
+          AlertService.info('Settings successfully saved', response);
+          $scope.setup();
+        },
+        function(error) {
+          AlertService.error('Error while saving settings', error);
+        }
+      );
+    };
+
+    $scope.setup = function() {
+      $scope.settings = {};
+      $scope.originalSettings = {};
+      $scope.changes = {};
+      $scope.pendingChanges = 0;
+      var loadSetting = function(value, property) {
+        $scope.settings[property] = value;
+        $scope.originalSettings[property] = value;
+      };
+
+      IndexSettingsDataService.get(
+        $scope.index,
+        function(response) {
+          angular.forEach(response[$scope.index].settings, loadSetting);
+          angular.forEach(response[$scope.index].defaults, loadSetting);
+        },
+        function(error) {
+          AlertService.error('Error loading index settings', error);
+        }
+      );
+    };
+  }
+]);
+
+angular.module('cerebro').factory('IndexSettingsDataService', ['DataService',
+  function(DataService) {
+
+    this.get = function(index, success, error) {
+      DataService.send('/index_settings', {index: index}, success, error);
+    };
+
+    this.update = function(index, settings, success, error) {
+      var body = {index: index, settings: settings};
+      DataService.send('/index_settings/update', body, success, error);
+    };
+
+    return this;
+  }
+]);
+
 angular.module('cerebro').controller('ModalController', ['$scope',
   'ModalService', function($scope, ModalService) {
 
@@ -501,9 +590,10 @@ angular.module('cerebro').controller('NavbarController', ['$scope', '$http',
 ]);
 
 angular.module('cerebro').controller('OverviewController', ['$scope', '$http',
-  '$window', 'DataService', 'AlertService', 'ModalService', 'RefreshService',
-  function($scope, $http, $window, DataService, AlertService, ModalService,
-           RefreshService) {
+  '$window', '$location', 'DataService', 'AlertService', 'ModalService',
+  'RefreshService',
+  function($scope, $http, $window, $location, DataService, AlertService,
+           ModalService, RefreshService) {
 
     $scope.data = undefined;
 
@@ -760,6 +850,10 @@ angular.module('cerebro').controller('OverviewController', ['$scope', '$http',
       DataService.enableShardAllocation(success, error);
     };
 
+    $scope.showIndexSettings = function(index) {
+      $location.path('index_settings').search('index', index);
+    };
+
   }]);
 
 angular.module('cerebro').controller('RestController', ['$scope', '$http',
@@ -990,9 +1084,11 @@ function AceEditor(target) {
   // formats the json content
   this.format = function() {
     try {
-      var content = this.editor.getValue();
-      this.editor.setValue(content, 0);
-      this.editor.gotoLine(0, 0, false);
+      var content = this.getValue();
+      if (content) {
+        this.editor.setValue(JSON.stringify(content, undefined, 2), 0);
+        this.editor.gotoLine(0, 0, false);
+      }
     } catch (error) { // nothing to do
     }
   };
@@ -1658,39 +1754,48 @@ angular.module('cerebro').factory('ClusterChangesService', [
   '$rootScope', 'AlertService', 'RefreshService', 'DataService',
   function($rootScope, AlertService, RefreshService, DataService) {
 
-    var indices;
-    var nodes;
+    var current = {
+      indices: undefined,
+      noeds: undefined,
+      clusterName: undefined
+    };
+
+    var processNodeChanges = function(nodes) {
+      var joined = difference(nodes, current.nodes);
+      var left = difference(current.nodes, nodes);
+      if (joined.length > 0) {
+        info(joined, ' nodes joined the cluster');
+      }
+      if (left.length > 0) {
+        warn(left, ' nodes left the cluster');
+      }
+      current.nodes = nodes;
+    };
+
+    var processIndicesChanges = function(indices) {
+      var created = difference(indices, current.indices);
+      var deleted = difference(current.indices, indices);
+      if (created.length > 0) {
+        info(created, ' indices created');
+      }
+      if (deleted.length > 0) {
+        warn(deleted, ' indices deleted');
+      }
+      current.indices = indices;
+    };
 
     var process = function() {
-      var successIndices = function(currentIndices) {
-        if (indices) {
-          var created = difference(currentIndices, indices);
-          var deleted = difference(indices, currentIndices);
-          if (created.length > 0) {
-            info(created, ' indices created');
-          }
-          if (deleted.length > 0) {
-            warn(deleted, ' indices deleted');
-          }
+      var success = function(data) {
+        if (current.clusterName === data.cluster_name) {
+          processNodeChanges(data.nodes);
+          processIndicesChanges(data.indices);
+        } else {
+          current.clusterName = data.cluster_name;
+          current.indices = data.indices;
+          current.nodes = data.nodes;
         }
-        indices = currentIndices;
       };
-      DataService.getIndices(successIndices, angular.noop);
-
-      var successNodes = function(currentNodes) {
-        if (nodes) {
-          var joined = difference(currentNodes, nodes);
-          var left = difference(nodes, currentNodes);
-          if (joined.length > 0) {
-            info(joined, ' nodes joined the cluster');
-          }
-          if (left.length > 0) {
-            warn(left, ' nodes left the cluster');
-          }
-        }
-        nodes = currentNodes;
-      };
-      DataService.getNodes(successNodes, angular.noop);
+      DataService.clusterChanges(success, angular.noop);
     };
 
     var difference = function(set1, set2) {
@@ -1708,12 +1813,8 @@ angular.module('cerebro').factory('ClusterChangesService', [
     };
 
     $rootScope.$watch(
-      function() {
-        return RefreshService.lastUpdate();
-      },
-      function() {
-        process();
-      },
+      function() { return RefreshService.lastUpdate(); },
+      function() { process(); },
       true
     );
 
@@ -1870,6 +1971,11 @@ angular.module('cerebro').factory('DataService', ['$rootScope', '$timeout',
 
     this.updateAliases = function(changes, success, error) {
       request('/aliases/update_aliases', {changes: changes}, success, error);
+    };
+
+    // ---------- Cluster State Changes ----------
+    this.clusterChanges = function(success, error) {
+      request('/cluster_changes', {}, success, error);
     };
 
     // ---------- Connect ----------
