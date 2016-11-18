@@ -1,8 +1,7 @@
 angular.module('cerebro').controller('OverviewController', ['$scope', '$http',
-  '$window', '$location', 'DataService', 'AlertService', 'ModalService',
-  'RefreshService',
-  function($scope, $http, $window, $location, DataService, AlertService,
-           ModalService, RefreshService) {
+  '$window', 'DataService', 'AlertService', 'ModalService', 'RefreshService',
+  function($scope, $http, $window, DataService, AlertService, ModalService,
+           RefreshService) {
 
     $scope.data = undefined;
 
@@ -257,10 +256,6 @@ angular.module('cerebro').controller('OverviewController', ['$scope', '$http',
 
     $scope.enableShardAllocation = function() {
       DataService.enableShardAllocation(success, error);
-    };
-
-    $scope.showIndexSettings = function(index) {
-      $location.path('index_settings').search('index', index);
     };
 
   }]);
